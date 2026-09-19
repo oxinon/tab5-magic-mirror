@@ -91,6 +91,11 @@ class RemoteSensorSource:
     def read(self):
         try:
             data = self.api_client.get_json("/api/env-sensor")
+        except ValueError:
+            # r.json() fehlgeschlagen ("syntax error in JSON"): der Server antwortet, aber nicht
+            # mit JSON - meist ist unter der Adresse gar keine /api/env-sensor-API vorhanden.
+            return SensorReading(source="remote", ok=False,
+                                  msg="Antwort kein JSON - falsche Server-Adresse?")
         except Exception as e:
             return SensorReading(source="remote", ok=False, msg=str(e))
 
@@ -253,8 +258,17 @@ class SensorManager:
         self.history = history
         self.recheck_interval_s = recheck_interval_s
         self.mode = mode if mode in self.MODES else "auto"
-        self._last_check = 0
+        # Zeitbasis ist der MONOTONE ticks_ms-Zaehler, NICHT time.time(): beim Boot ist die
+        # RTC noch nicht per NTP gestellt (time.time() ~ Sekunden seit Start) - mit
+        # `time.time() - 0 < 30` wurde die erste Pruefung "ist der lokale Sensor da?"
+        # uebersprungen, und fuer die ersten ~30 s (bis NTP die Uhr auf 2026 springen liess)
+        # kam nur die Fernquelle mit ihren Fehlertexten ("Kein Netzwerk verfuegbar",
+        # "Syntax error in JSON") ins Raumklima-Widget.
+        self._last_check_ms = None
         self._use_local = False
+        self._local_seen = False       # lokaler Sensor war schon einmal verfuegbar
+        self._local_ok_once = False    # lokaler Sensor hat schon einmal einen gueltigen Wert geliefert
+        self._started_ms = _ticks_ms()
         # Optional: Funktion ohne Argumente, die die Remote-Messung NICHT
         # blockierend (aus einem Hintergrund-Cache) liefert. main.py setzt sie -
         # sonst wuerde jeder remote.read() (HTTP, bis 5s Timeout) den
@@ -272,12 +286,19 @@ class SensorManager:
         if mode in self.MODES:
             self.mode = mode
 
+    STARTUP_GRACE_MS = 60000   # so lange zeigt ein noch nie gelesener Sensor "wird initialisiert"
+
     def _refresh_source_choice(self):
-        now = time.time()
-        if now - self._last_check < self.recheck_interval_s:
+        now = _ticks_ms()
+        # Solange der lokale Sensor noch nie da war, haeufiger nachsehen (alle 5 s statt 30 s):
+        # er braucht nach dem Boot manchmal einen Moment.
+        interval_s = self.recheck_interval_s if self._local_seen else min(5, self.recheck_interval_s)
+        if self._last_check_ms is not None and _ticks_diff(now, self._last_check_ms) < interval_s * 1000:
             return
-        self._last_check = now
+        self._last_check_ms = now
         self._use_local = self.local.is_available()
+        if self._use_local:
+            self._local_seen = True
 
     def read(self):
         """Liefert die 'primäre' Quelle für den aktuellen Modus - das ist
@@ -289,9 +310,20 @@ class SensorManager:
             reading = self._remote_read()
         else:  # "auto" oder "both" - gleiches Auswahlverhalten für die Primärquelle
             self._refresh_source_choice()
-            reading = self.local.read() if self._use_local else self._remote_read()
-            if self._use_local and not reading.ok:
+            if self._use_local:
+                reading = self.local.read()
+                if reading.ok:
+                    self._local_ok_once = True
+                else:
+                    reading = self._remote_read()
+            else:
                 reading = self._remote_read()
+            # Startphase: der lokale Sensor hat noch nie einen Wert geliefert und die
+            # Fernquelle liefert nur Fehler (noch kein Netz / Server ohne env-sensor-API):
+            # neutral "wird initialisiert" statt deren Fehlertexte zeigen.
+            if (not reading.ok and not self._local_ok_once
+                    and _ticks_diff(_ticks_ms(), self._started_ms) < self.STARTUP_GRACE_MS):
+                reading = SensorReading(source="local", ok=False, msg="wird initialisiert...")
 
         if reading.ok and self.history is not None:
             self.history.add(reading.as_dict())
