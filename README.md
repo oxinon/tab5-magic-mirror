@@ -1,123 +1,135 @@
 # Tab5 Magic Mirror
 
-A MicroPython/UIFlow2 dashboard firmware for the [M5Stack Tab5](https://docs.m5stack.com/en/core/Tab5) (ESP32-P4, 1280×720 touchscreen) — a modern take on the classic "magic mirror" concept: a wall-mounted display showing weather, calendar, news, crypto, and smart-home data at a glance, plus live readings from the Tab5's own onboard sensors.
+A customizable "magic mirror" style dashboard for the [M5Stack Tab5](https://docs.m5stack.com/en/core/Tab5) (ESP32-P4), built on UIFlow2 / MicroPython. It runs a full-screen LVGL dashboard on the device itself, plus a built-in web UI for configuration, widget management, and live sensor/system data — no companion app, no cloud service required.
 
 ![Dashboard preview](pictures/preview_dashboard.png)
 
 ## Highlights
 
-- **25+ configurable widgets** in a 4×3 grid — weather (with drawn icons, no image files needed), calendar, news, crypto/stocks, quotes, air-quality warnings, DEFCON status, river levels, Home Assistant switches/entities, Docker container status, and more.
-- **Built-in sensor dashboard** — a second full screen with a live, multi-metric chart (temperature/humidity/IAQ) of the onboard BME688 air sensor, with selectable time ranges and automatic SD-card fallback once that becomes available.
-- **Local sensors**: BME688 (temperature/humidity/pressure/IAQ with baseline calibration), BMI270 accelerometer (STA/LTA earthquake-style shock detection), onboard microphone (band equalizer + acoustic level).
-- **Web UI** for configuration — no need to touch the device to rearrange widgets, connect Wi-Fi, calibrate sensors, or wire up Home Assistant/Atom relays. Changes apply live via a background reload watcher; no reboot needed for most settings.
-- **Background-threaded network fetching** — network widgets update on a background thread (the ESP32-P4 has cycles to spare), so the UI clock and touch input never freeze while a widget fetches data.
-- **Bilingual** (German/English), dark/light theme, all fully translatable via `i18n.py`.
-- **Home Assistant** and **Atom relay board** integration for smart-switch control.
-
-## Screenshots
-
-| Main dashboard | Sensor dashboard | Web UI |
-|---|---|---|
-| ![Dashboard](pictures/preview_dashboard.png) | ![Sensor dashboard](pictures/preview_sensor_dashboard.png) | ![Web UI](pictures/preview_webui.png) |
-
-See [`pictures/preview_widgets.png`](pictures/preview_widgets.png) for a catalog of every individual widget.
+- **20+ widgets**: clock, weather, calendar (iCal), RSS, Home Assistant entities, PC/server status, sensor readings, notes/todo, custom logos, and more — arranged on one or more dashboard pages you design yourself in the web UI.
+- **Multi-dashboard support**: build several dashboard layouts and switch between them, e.g. a day dashboard and a night/sensor dashboard, or per-room layouts.
+- **Local sensor dashboard**: onboard BME688 (temperature/humidity/pressure/IAQ) and BMI270 accelerometer, with graphed history and quake/shock detection.
+- **Home Assistant & Atom relay integration**: read and toggle entities/relays directly from the dashboard or web UI.
+- **PC/server status**: pulls CPU, GPU, RAM and Docker status from a small companion server (`aida_sse_server.py`) running on a PC.
+- **Web UI**: responsive, no-build-step HTML/CSS/JS served directly from the device — dashboard editor, widget configuration, notes, system settings, sensor history, and Wi-Fi setup.
+- **Runs entirely on-device**: pure MicroPython, no cloud dependency, no app to install.
 
 ## Hardware
 
-- M5Stack Tab5 (ESP32-P4, 1280×720 LVGL/m5ui touchscreen, 16MB flash)
-- UIFlow2 MicroPython firmware **2.4.6** specifically — see [Known limitations](#known-limitations) below for why
-- Optional: M5Stack Atom relay board (light/outlet switching), Home Assistant instance, external BME688-based sensor device (e.g. a Core2-MiniDash) for a second climate reading
+- M5Stack Tab5 (ESP32-P4, 1280×720 IPS touch display)
+- UIFlow2 firmware, tested on **v2.5.3** (MicroPython v1.27.0)
+- Optional: SD card for extended sensor history logging
 
 ## Getting started
 
-1. Flash UIFlow2 **2.4.6** onto the Tab5 (see [Known limitations](#known-limitations) — newer releases crash on boot on some chip revisions).
-2. Set `boot_option` to `0` in NVS so `main.py` starts directly instead of the stock launcher:
+1. Flash your Tab5 with UIFlow2 firmware (v2.5.3 or newer recommended).
+2. Copy the project files to the device's `/flash` filesystem. `copy_to_tab5.sh` automates this via [`mpremote`](https://docs.micropython.org/en/latest/reference/mpremote.html):
    ```bash
-   mpremote connect <PORT> resume exec "import esp32; nvs = esp32.NVS('uiflow'); nvs.set_u8('boot_option', 0); nvs.commit()"
+   ./copy_to_tab5.sh /dev/ttyACM0
    ```
-3. Copy all project files onto the device:
-   ```bash
-   bash copy_to_tab5.sh <PORT>
-   ```
-4. Power-cycle the device. On first boot it starts a Wi-Fi access point (`Tab5-Setup`) if it can't find a known network — connect to it and open the web UI to enter your Wi-Fi credentials.
-5. Open `http://<device-ip>/dashboard` in a browser to enable/arrange widgets, and `http://<device-ip>/` for live sensor readings and calibration.
+3. Reboot the device. On first boot it starts in Wi-Fi access-point mode (`Tab5-Magic-Mirror`, a random per-device password shown on screen) so you can connect it to your Wi-Fi network from the web UI.
+4. Open the device's IP address in a browser to configure widgets, dashboards, and sensors.
 
-See `TAB5_RUNBOOK.md` for day-to-day operational commands (flashing, recovering from a crash loop, boot troubleshooting) and `HANDOFF.md` for the full technical history of firmware quirks discovered along the way.
+### Optional: precompiled boot (faster startup)
 
-## Widget catalog
-
-| Widget | Description |
-|---|---|
-| Clock | Local time + date, DST-aware |
-| Calendar | Upcoming events from a private iCal URL |
-| Weather | Current conditions with a drawn weather icon (sun/clouds/fog/rain/snow/storm), temperature, humidity, wind |
-| News | Rotating RSS headlines |
-| Crypto / Stocks | Rotating price ticker |
-| Quote of the Day | |
-| Climate (local) | Onboard BME688: temperature, humidity, pressure, IAQ score |
-| Climate (external) | Same, from a second networked sensor device |
-| Air Quality (local / outdoor) | IAQ traffic-light indicator; outdoor variant via Open-Meteo |
-| Acoustic | Live sound level with a traffic-light indicator |
-| Equalizer | Live frequency-band visualization from the onboard mic |
-| Acceleration | STA/LTA ratio-based shock/earthquake indicator |
-| Computer Status | CPU/GPU usage, clock, temperature from a PC on the local network (AIDA64 RemoteSensor-compatible `/sse` endpoint) |
-| Docker Status | Container up/down status with colored dots, from a companion Flask service |
-| Home Assistant switch / entity | Toggle lights/outlets or display any HA entity state |
-| Weather warnings | Official DWD warnings for a region |
-| Air quality (outdoor detail), river level, DEFCON, EWS | Assorted public-data widgets, each independently toggleable |
-| Compliments, To-do | Simple static/local widgets |
-
-Every widget can be enabled, positioned, and configured (title, refresh behavior, source URLs) from the web UI's dashboard editor — no code changes needed for day-to-day use.
-
-## Sensor dashboard
-
-A second screen (reachable from the burger menu) shows a live, multi-series chart of the local BME688's temperature, humidity, and IAQ score, with independent left/right axes (temperature gets its own scale; humidity and IAQ share a fixed 0–100 scale), a selectable time range (10 minutes to 24 hours), and time labels. Data currently comes from a 24-hour in-RAM ring buffer; the read path is already written to prefer the SD card transparently once that becomes available on this hardware (see below).
-
-## Known limitations
-
-Built and documented honestly — some of these are firmware/platform issues outside this project's control, not bugs in this code:
-
-- **SD card does not work.** ESP32-P4 SDMMC support is an [open, unresolved issue in MicroPython itself](https://github.com/micropython/micropython/issues/18984) as of this writing, not specific to this project or firmware fork. All logging/reading code is written and ready — it will start working transparently once upstream support lands.
-- **Onboard microphone returns silence** (`M5.Mic.record()` succeeds but the buffer is always zero) on the tested firmware build. Confirmed via isolated diagnostic script, reported upstream.
-- **UIFlow2 releases newer than 2.4.6 crash on boot** on early ESP32-P4 engineering-sample silicon (chip revision v1.3/`eco2`). Confirmed across three releases; a support ticket is open with M5Stack. Stick to 2.4.6 on affected units.
-- **BMI270 accelerometer** may return all-zero readings on some firmware builds — worth a quick sanity check on your specific unit before relying on the shock-detection widget.
-
-None of the above block normal use of the dashboard — they simply mean the SD card, microphone-based widgets, and (on some units) the accelerometer won't show live data until upstream fixes land.
+`tools/build_mpy.sh` precompiles the app to MicroPython bytecode (`.mpy`) using `mpy-cross`, splitting `main.py` into a thin `boot` stub plus a compiled `app.mpy`. This removes several seconds of on-device compilation at every boot. Requires `mpy-cross` matching the firmware's MicroPython version (`pip install mpy-cross==1.27.0.post2`):
+```bash
+./tools/build_mpy.sh
+```
 
 ## Project structure
 
 ```
-main.py                  Boot sequence, task scheduling, sensor wiring
-config.py                Central config schema, defaults, migration
-theme.py / i18n.py       Colors and translations (dark/light, DE/EN)
-web_server.py            Web UI (dashboard editor, live sensors, settings)
-fetch_worker.py          Background-thread network fetch dispatcher
-widget_sources.py        All external API/data-source fetchers
-burger_menu.py           On-device quick menu (Wi-Fi, brightness, screen switch)
-screens/
-  dashboard.py           Main dashboard screen
-  widget_catalog.py       All widget build/fetch/paint logic
-  sensor_history_screen.py  Live sensor chart screen
-sensors/                 BME688, BMI270, microphone, SD logging/reading, IAQ tracking
-widgets/                 Reusable LVGL components (cards, gauges, equalizer, ...)
-tools/sim_test.py        Desktop smoke test (no hardware required)
-copy_to_tab5.sh          One-shot deploy script
+main.py                 App entry point: boot sequence, task scheduling, sensor loops
+config.py                Config load/save (atomic writes, defaults, read-only cache)
+web_server.py             Built-in HTTP server: dashboard editor, settings, API endpoints
+fetch_worker.py           Background thread pool for network/blocking calls
+wifi_manager.py           Wi-Fi STA/AP connection handling, early-connect boot optimization
+widget_sources.py         Data fetching for RSS/iCal/weather/etc. widgets
+ha_client.py               Home Assistant REST client
+atom_client.py             ATOM relay board client
+api_client.py               Generic HTTP API widget client
+ntp_clock.py                NTP time sync
+theme.py / i18n.py           Styling and translations
+burger_menu.py               On-device navigation menu
+clock_widget.py               Standalone clock screen
+
+screens/                Full-screen UI views (dashboard, sensor history, settings, ...)
+widgets/                 Individual dashboard widget implementations
+sensors/                 Sensor drivers and processing (BME688, BMI270, mic, SD logging/reading, IAQ, quake trigger)
+static/                 Web UI assets (HTML/CSS/JS)
+tools/                  Build and diagnostic tooling (mpy-cross build, simulator, PNG conversion, boot stub)
+pictures/               README preview images
+
+aida_sse_server.py       Companion PC-side status server (see below)
+copy_to_tab5.sh          Deploys the project to a connected Tab5 via mpremote
 ```
 
-## Development
+## Companion PC/server status server
 
-Most non-LVGL logic (config, layout math, history downsampling, i18n) can be tested on a desktop without hardware:
-
+`aida_sse_server.py` is a small standalone Python server meant to run on a PC or home server, exposing CPU/GPU/RAM/Docker status over HTTP for the `pc_status` / `server_status` widgets. It samples system state in a background thread (so widget requests never block on `nvidia-smi` or Docker calls) and exposes a `/health` endpoint for basic monitoring. Run it with:
 ```bash
-python3 tools/sim_test.py
+python3 aida_sse_server.py
 ```
 
-`diagnose_*.py` scripts are standalone hardware diagnostics (microphone, battery, SD card, threading, dropdown widget behavior) used while tracking down the firmware quirks listed above — handy references if you hit similar issues on your own unit.
+## Security
 
-## Credits
+The web UI is unauthenticated by default (suitable for a trusted home network) but supports:
+- **Optional HTTP Basic Auth**: set a password in System settings to require login for the web UI.
+- **CSRF protection**: a per-boot random token is required on all state-changing requests.
+- **Per-device random AP password**: the Wi-Fi setup access point uses a randomly generated password persisted to the device, not a hardcoded default.
+- **Secret masking**: API keys and calendar URLs are never echoed back to the browser once saved.
+- **Security headers**: CSP, X-Frame-Options, and related headers are set on all responses.
 
-Widget layout conventions and web-UI styling inspired by [oxinon/magic-mirror-3000](https://github.com/oxinon/magic-mirror-3000). Computer Status widget compatible with [oxinon/knob-esp32s3-aida-sse-server-linux](https://github.com/oxinon/knob-esp32s3-aida-sse-server-linux)'s `/sse` endpoint.
+If exposing the device beyond your local network, put it behind a reverse proxy with HTTPS and enable the web UI password.
+
+## Stability
+
+The device is designed to run unattended for long periods:
+- Config writes are atomic (write-temp, rotate backup, rename) to survive power loss mid-write.
+- Background tasks are individually supervised and auto-restart on unexpected errors instead of taking down the whole app.
+- A Wi-Fi watchdog detects a dropped connection or an idle access-point state and reconnects automatically.
+- Network-dependent widgets read from a background-refreshed cache via a persistent thread pool, so a slow or failing network call never blocks the UI.
+- If the main event loop ever crashes fatally, the device cleanly disconnects Wi-Fi and reboots itself rather than requiring a manual power cycle.
+
+## Switching to the stock UIFlow2 menu
+
+The System page in the web UI has a button to boot into the stock UIFlow2 startup menu (e.g. to reconfigure Wi-Fi using UIFlow2's own tools, or run UIFlow2 blockly programs). This requires the project to be deployed in precompiled form (`tools/build_mpy.sh`). When active, use only **RUN** from the UIFlow2 menu, never **DOWNLOAD** — DOWNLOAD overwrites `main.py` and will require re-deploying this project. The device automatically returns to running this app on the next boot after leaving the UIFlow2 menu.
+
+This feature has been validated against the firmware's boot mechanism but not exhaustively tested on-device in every UIFlow2 menu state — test manually before relying on it.
+
+## Known limitations
+
+These are upstream MicroPython/UIFlow2/hardware limitations, not bugs in this project. Where possible, the app detects and reports them gracefully instead of silently producing bad data:
+- **SD card**: SD card access is unreliable on some UIFlow2/MicroPython builds ([upstream issue #18984](https://github.com/m5stack/UIFlow2/issues/18984)). When unavailable, sensor history falls back to in-RAM buffers automatically.
+- **Onboard microphone**: may return silence on some units/firmware versions. The app detects sustained all-zero readings and reports the sensor as unavailable rather than displaying fake "quiet" data.
+- **BMI270 accelerometer**: may occasionally return all-zero readings. Detected the same way, avoiding false "calm" data and false shock-trigger suppression.
+- **No hardware PNG decoder**: custom logo images are converted via a pure-Python PNG decoder at upload time (bounded to guard against decompression-bomb payloads); very large or unusual PNGs may not convert cleanly.
 
 ## License
 
-MIT (or your preferred license — update this section before publishing).
+MIT License — see below.
+
+```
+MIT License
+
+Copyright (c) 2026 oxinon
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

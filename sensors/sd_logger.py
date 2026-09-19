@@ -34,6 +34,17 @@ FIELDS = [
 ]
 
 
+# Zeitstempel unterhalb dieser Grenze (1.1.2024) = Uhr noch nicht per NTP
+# gestellt (interne RTC steht dann im Jahr 2000): nichts loggen, sonst
+# landen falsche Zeitstempel in "2000-01-01.csv" und die Historie ist
+# unbrauchbar.
+MIN_VALID_TS = 1704067200
+
+# Fehlermeldungen hoechstens so oft (Sekunden) ausgeben - sonst alle 20s
+# dieselbe Zeile, solange die SD-Karte fehlt.
+ERROR_PRINT_INTERVAL_S = 300
+
+
 class SDLogger:
     def __init__(self, base_path="/sd/logs", flush_every=10):
         self.base_path = base_path
@@ -41,7 +52,38 @@ class SDLogger:
         self._pending = 0
         self._current_date = None
         self._file = None
+        self._last_err_print = None
+        self._warned_no_time = False
         self._ensure_dir()
+
+    def _print_error(self, text):
+        now = time.time()
+        if self._last_err_print is None or abs(now - self._last_err_print) > ERROR_PRINT_INTERVAL_S:
+            self._last_err_print = now
+            print(text)
+
+    def _close_broken(self):
+        """Datei-Handle nach einem Fehler verwerfen, damit der naechste
+        log()-Aufruf sie neu oeffnet. Frueher blieb das kaputte Handle fuer
+        den Rest des Tages bestehen (z.B. SD kurz gezogen): jeder weitere
+        Schreibversuch schlug fehl, das Logging war bis zum Neustart tot."""
+        f, self._file = self._file, None
+        self._current_date = None
+        self._pending = 0
+        if f is not None:
+            try:
+                f.close()
+            except Exception:
+                pass
+
+    def _header_matches(self, path):
+        """True, wenn die erste Zeile der vorhandenen Datei zum aktuellen
+        FIELDS-Schema passt."""
+        try:
+            with open(path) as f:
+                return f.readline().strip() == ",".join(FIELDS)
+        except Exception:
+            return False
 
     def _ensure_dir(self):
         try:
@@ -76,6 +118,22 @@ class SDLogger:
         except OSError:
             pass
 
+        if not is_new and not self._header_matches(path):
+            # Schema hat sich geaendert (FIELDS erweitert): alte Datei zur
+            # Seite legen und neu beginnen - sonst haengen neue Zeilen mit
+            # anderer Spaltenzahl an alte, und sd_reader ueberspringt sie still.
+            old = path[:-4] + ".old.csv"
+            try:
+                try:
+                    os.remove(old)
+                except OSError:
+                    pass
+                os.rename(path, old)
+                print("SDLogger: Spaltenschema geaendert - alte Datei nach", old)
+            except Exception as e:
+                print("SDLogger: alte Datei konnte nicht beiseitegelegt werden:", e)
+            is_new = True
+
         self._file = open(path, "a")
         if is_new:
             self._file.write(",".join(FIELDS) + "\n")
@@ -87,17 +145,25 @@ class SDLogger:
         zusammengeführt. Fehlende FIELDS-Einträge werden leer geschrieben."""
         ts = ts if ts is not None else time.time()
 
+        if ts < MIN_VALID_TS:
+            if not self._warned_no_time:
+                self._warned_no_time = True
+                print("SDLogger: Uhr noch nicht per NTP gestellt - logge erst danach.")
+            return False
+
         try:
             self._open_if_needed(ts)
         except Exception as e:
-            print("SDLogger: Datei konnte nicht geöffnet werden (SD gesteckt?):", e)
+            self._close_broken()
+            self._print_error("SDLogger: Datei konnte nicht geöffnet werden (SD gesteckt?): %s" % (e,))
             return False
 
         row = [str(ts)] + [self._fmt(values.get(k)) for k in FIELDS[1:]]
         try:
             self._file.write(",".join(row) + "\n")
         except Exception as e:
-            print("SDLogger: Schreibfehler:", e)
+            self._close_broken()
+            self._print_error("SDLogger: Schreibfehler (Datei wird beim naechsten Mal neu geoeffnet): %s" % (e,))
             return False
 
         self._pending += 1

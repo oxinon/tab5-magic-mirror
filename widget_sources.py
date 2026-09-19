@@ -55,6 +55,37 @@ WEATHER_CODES = {
 }
 
 
+# Obergrenzen fuer Textantworten (RSS/iCal). Ohne Grenze lud `r.text` die KOMPLETTE
+# Antwort (bytes + str = doppelter RAM): ein sehr grosser Kalender oder ein
+# unerwartet riesiger Feed konnte den Speicher sprengen (MemoryError im
+# Hintergrund-Thread). Ueber der Grenze wird abgeschnitten und geloggt.
+MAX_FEED_BYTES = 256 * 1024
+MAX_ICS_BYTES = 768 * 1024
+
+
+def _read_text_limited(r, limit):
+    """Antworttext (UTF-8) mit hoechstens `limit` Bytes."""
+    raw = getattr(r, "raw", None)
+    if raw is not None and hasattr(raw, "read") and getattr(r, "_cached", "n/a") is None:
+        data = raw.read(limit + 1)      # urequests: Body noch nicht gelesen
+    else:
+        data = r.content                # anderer Client (Desktop-Tests)
+    if data is None:
+        data = b""
+    if len(data) > limit:
+        print("widget_sources: Antwort groesser als %d Bytes - abgeschnitten" % limit)
+        data = data[:limit]
+    try:
+        return str(data, "utf-8")
+    except Exception:
+        for cut in (1, 2, 3):           # evtl. mitten in einem Mehrbyte-Zeichen abgeschnitten
+            try:
+                return str(data[:-cut], "utf-8")
+            except Exception:
+                pass
+        return data.decode()
+
+
 def _get_json(url, timeout=10, headers=None):
     r = requests.get(url, timeout=timeout, headers=headers) if headers else requests.get(url, timeout=timeout)
     try:
@@ -133,7 +164,7 @@ def fetch_weather(widget_cfg):
     url = (
         "https://api.open-meteo.com/v1/forecast?latitude={}&longitude={}"
         "&current=temperature_2m,apparent_temperature,relative_humidity_2m,"
-        "wind_speed_10m,wind_gusts_10m,weather_code"
+        "wind_speed_10m,wind_gusts_10m,weather_code,is_day"
         "&temperature_unit={}&wind_speed_unit=kmh&timezone=auto"
     ).format(lat, lon, temp_unit)
     try:
@@ -141,6 +172,14 @@ def fetch_weather(widget_cfg):
         cur = data.get("current", {})
         code = cur.get("weather_code", 0)
         desc, group = WEATHER_CODES.get(int(code), ("Unbekannt", "cloudy"))
+        # Nachts + klarer Himmel -> eigene Icon-Gruppe (Mond+Sterne statt
+        # Sonne, siehe screens/widget_catalog.py::_draw_weather_icon()).
+        # is_day fehlt im Response nur in seltenen Fehlerfällen - dann
+        # lieber "Tag" annehmen (Sonne ist der unauffälligere Default als
+        # ein Mond am helllichten Tag).
+        is_day = cur.get("is_day", 1)
+        if group == "clear" and not is_day:
+            group = "clear_night"
         return {
             "ok": True,
             "location": to_ascii(widget_cfg.get("location", "")),
@@ -210,13 +249,10 @@ def fetch_news(widget_cfg):
     url = src["feedUrl"].strip()
     max_items = int(widget_cfg.get("max_items", 5) or 5)
 
+    r = None
     try:
         r = requests.get(url, timeout=12)
-        text = r.text
-        try:
-            r.close()
-        except Exception:
-            pass
+        text = _read_text_limited(r, MAX_FEED_BYTES)
         items = []
         pos = 0
         while len(items) < max_items:
@@ -230,6 +266,14 @@ def fetch_news(widget_cfg):
         return {"ok": True, "items": items, "source_name": to_ascii(name)}
     except Exception as e:
         return {"ok": False, "msg": "News-Fehler: %s" % e, "items": [], "source_name": to_ascii(name)}
+    finally:
+        # Socket IMMER schliessen (frueher nur im Erfolgsfall -> bei einem Fehler
+        # im Lesen/Parsen blieb der Socket bis zum GC offen).
+        if r is not None:
+            try:
+                r.close()
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------
@@ -555,13 +599,10 @@ def fetch_calendar(widget_cfg):
     max_events = int(widget_cfg.get("max_events", 5) or 5)
     days_ahead = int(widget_cfg.get("days_ahead", 14) or 14)
 
+    r = None
     try:
         r = requests.get(url, timeout=15)
-        text = r.text
-        try:
-            r.close()
-        except Exception:
-            pass
+        text = _read_text_limited(r, MAX_ICS_BYTES)
         lines = _unfold_ics(text)
 
         now = _time.time()
@@ -599,6 +640,12 @@ def fetch_calendar(widget_cfg):
         return {"ok": True, "events": events[:max_events]}
     except Exception as e:
         return {"ok": False, "msg": "Kalender-Fehler: %s" % e, "events": []}
+    finally:
+        if r is not None:
+            try:
+                r.close()
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------

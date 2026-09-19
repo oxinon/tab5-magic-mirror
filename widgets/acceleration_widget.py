@@ -85,7 +85,9 @@ class AccelerationWidget:
         self.ratio_label.set_text("%.1fx" % r)
         self.caption_label.set_text(STRINGS["accel.ratio_caption"] % (peak_ratio if peak_ratio is not None else 1.0))
 
-        if last_event_ts:
+        if last_event_ts and time.time() - last_event_ts < 10 * 365 * 86400:
+            # (>10 Jahre = Ereignis lag VOR der NTP-Zeitsynchronisierung -> als
+            # "kein Ereignis" behandeln statt "vor 800000000s" anzuzeigen)
             elapsed = max(0, int(time.time() - last_event_ts))
             self.event_label.set_text(STRINGS["accel.last_event"] % elapsed)
         else:

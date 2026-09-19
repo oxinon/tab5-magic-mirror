@@ -35,8 +35,13 @@ class SensorHistory:
     def add(self, values: dict, ts=None):
         ts = ts if ts is not None else time.time()
         self._buf.append((ts, dict(values)))
-        if len(self._buf) > self.max_len:
-            self._buf.pop(0)
+        # Nicht bei JEDEM Eintrag pop(0) (verschiebt die ganze Liste, O(n)), sondern
+        # erst bei etwas Ueberlauf einmal auf max_len zurueckschneiden: amortisiert
+        # ~O(1). Der Puffer bleibt eine chronologische Liste (andere Module lesen
+        # _buf direkt) und ist zwischendurch hoechstens ~12% groesser als max_len.
+        slack = max(8, self.max_len // 8)
+        if len(self._buf) > self.max_len + slack:
+            del self._buf[:len(self._buf) - self.max_len]
 
     def latest(self):
         return self._buf[-1] if self._buf else None

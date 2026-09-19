@@ -15,6 +15,7 @@ import ntp_clock
 from theme import COLORS
 from i18n import get_lang
 from widgets import lv_const
+from lvgl_safety import lvgl_safe_callback
 
 try:
     import lvgl as lv
@@ -112,7 +113,9 @@ class ClockWidget:
 
         self._timer = None
         self._tick()
-        self._timer = lv.timer_create(lambda t: self._tick(), 1000, None)
+        # Jede Sekunde - eine unbehandelte Exception haette sich jede Sekunde
+        # wiederholt und den LVGL-Scheduler mitgerissen (siehe lvgl_safety.py).
+        self._timer = lv.timer_create(lvgl_safe_callback(label="Uhr-Tick")(lambda t: self._tick()), 1000, None)
 
     def _tick(self):
         # ntp_clock.now_local() statt time.localtime() direkt: MicroPython

@@ -42,6 +42,25 @@ class IAQTracker:
         self.gas_baseline = None
         self.readings_count = 0
 
+    # Plausibler Bereich fuer eine Gas-Baseline in Ohm (BME688: typisch 10 kOhm-1 MOhm)
+    BASELINE_MIN_OHM = 1000
+    BASELINE_MAX_OHM = 50000000
+
+    def load_state(self, baseline_ohm):
+        """Gespeicherte Baseline uebernehmen (nach einem Neustart), damit nicht jedes
+        Mal 10 neue Messungen (ca. 200s, ggf. in verbrauchter Luft) noetig sind.
+        Unplausible Werte werden ignoriert. Gibt True zurueck, wenn uebernommen."""
+        try:
+            value = float(baseline_ohm)
+        except (TypeError, ValueError):
+            return False
+        if not (self.BASELINE_MIN_OHM < value < self.BASELINE_MAX_OHM):
+            return False
+        self.gas_baseline = value
+        self.gas_readings = []
+        self.readings_count = max(self.readings_count, self.burn_in_readings)
+        return True
+
     def reset(self):
         """Kalibrierung manuell neu starten (z.B. nach dem Lüften des Raums)."""
         self.gas_readings = []
@@ -68,6 +87,9 @@ class IAQTracker:
                     top_half = sorted_vals[len(sorted_vals) // 2:]
                     self.gas_baseline = sum(top_half) / len(top_half)
                 return None
+
+        if not self.gas_baseline or self.gas_baseline <= 0:
+            return None  # ungueltige Baseline (z.B. Gaswiderstand 0 beim allerersten Lesen) - keine Division durch 0
 
         hum_offset = humidity - self.hum_baseline
         hum_weight_pct = self.hum_weight * 100

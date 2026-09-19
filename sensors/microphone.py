@@ -24,6 +24,17 @@ except ImportError:
     M5 = None  # Desktop-Test (tools/sim_test.py) - kein M5-Modul vorhanden
 
 
+try:
+    _ticks_ms = time.ticks_ms
+    _ticks_diff = time.ticks_diff
+except AttributeError:  # Desktop-Test
+    def _ticks_ms():
+        return int(time.time() * 1000)
+
+    def _ticks_diff(a, b):
+        return a - b
+
+
 class MicReading:
     def __init__(self, rms=None, db=None, peak=None, bands=None, ok=True, msg=None):
         self.rms = rms
@@ -86,6 +97,12 @@ class LocalMicSource:
         self.sample_rate = sample_rate
         self._buf = bytearray(sample_window * 2)  # 16-bit PCM
         self._warned_zero = False
+        # Optional (von main.py gesetzt): Funktion ohne Argumente; True = JETZT
+        # nicht aufnehmen (z.B. Alarmton laeuft - M5.Speaker.end() beim Lesen
+        # wuerde ihn abschneiden).
+        self.skip_if = None
+        self._silent_streak = 0
+        self._last_attempt_ms = None
 
     def is_available(self):
         return M5 is not None
@@ -161,7 +178,24 @@ class LocalMicSource:
         db = 20 * math.log10(magnitude / self.REFERENCE_RMS) if magnitude > 0 else -100.0
         return max(0, min(100, db + 60))
 
+    # Nach so vielen stillen Fenstern hintereinander liefert das Mikrofon
+    # offenbar nichts (bekannter Firmware-Bug) - dann nur noch alle
+    # SILENT_RETRY_S Sekunden neu versuchen statt bei JEDEM Zyklus (jede
+    # Aufnahme blockiert bis zu 0,5s den Hauptthread).
+    SILENT_LIMIT = 3
+    SILENT_RETRY_S = 600
+
     def read(self):
+        if self.skip_if is not None:
+            try:
+                if self.skip_if():
+                    return MicReading(ok=False, msg="Alarmton aktiv")
+            except Exception:
+                pass
+        if self._silent_streak >= self.SILENT_LIMIT and self._last_attempt_ms is not None:
+            if _ticks_diff(_ticks_ms(), self._last_attempt_ms) < self.SILENT_RETRY_S * 1000:
+                return MicReading(ok=False, msg="Mikrofon liefert nur Stille (bekannter Firmware-Bug)")
+        self._last_attempt_ms = _ticks_ms()
         try:
             samples = self._read_samples()
         except Exception as e:
@@ -169,6 +203,14 @@ class LocalMicSource:
 
         if not samples:
             return MicReading(ok=False, msg="keine Samples gelesen")
+
+        # Komplett stilles Fenster (alle Samples 0) = kein echtes Mikrofonsignal
+        # (bekannter Firmware-Bug, siehe _read_samples()). Frueher wurde daraus
+        # db=0 mit ok=True ("leise") plus 12 sinnlose Goertzel-Durchlaeufe.
+        if not any(samples):
+            self._silent_streak += 1
+            return MicReading(ok=False, msg="Mikrofon liefert nur Stille (bekannter Firmware-Bug)")
+        self._silent_streak = 0
 
         n = len(samples)
         mean = sum(samples) / n

@@ -31,6 +31,13 @@ import machine
 import os
 import time
 
+print("Firmware/Board-Info:")
+try:
+    print(" ", os.uname())
+except Exception as e:
+    print("  os.uname() fehlgeschlagen:", e)
+print()
+
 
 def _try_mount(label, make_card):
     print("-" * 60)

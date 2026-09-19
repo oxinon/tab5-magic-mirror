@@ -19,6 +19,7 @@ echo ">>> Verzeichnisse anlegen (Fehler falls schon vorhanden sind ok)"
 $MP mkdir sensors || true
 $MP mkdir screens || true
 $MP mkdir widgets || true
+$MP mkdir static || true
 
 echo ">>> Basis-Dateien kopieren"
 $MP cp config.py :
@@ -34,16 +35,21 @@ $MP cp ha_client.py :
 $MP cp atom_client.py :
 $MP cp web_server.py :
 $MP cp burger_menu.py :
-# main.py wird DIREKT als main.py kopiert (startet beim Boot automatisch).
-# Ursprünglich gab es hier einen Zwischenschritt über main_app.py (siehe
-# HANDOFF.md/TAB5_RUNBOOK.md: main.py mit Web-Server + mehreren Sensor-
-# Tasks macht die USB-Serial/JTAG-Verbindung auf dieser Firmware/Chip-
-# Kombination unzuverlässig) - in der Praxis wurde aber durchgehend direkt
-# mit main.py getestet, daher jetzt der direkte Weg als Standard. Falls
-# die USB-Verbindung wieder unzuverlässig wird, stattdessen wie früher
-# erst als main_app.py kopieren und über "import main_app" im REPL testen:
-#   $MP cp main.py :main_app.py
+$MP cp png_convert.py :
+
 $MP cp main.py :main.py
+$MP cp lvgl_safety.py :lvgl_safety.py
+
+echo ">>> static web/ kopieren"
+$MP cp static/chart.min.js :static/chart.min.js
+$MP cp static/style.css :static/style.css
+$MP cp static/start.js :static/start.js
+$MP cp static/sensors.js :static/sensors.js
+$MP cp static/dashboard.js :static/dashboard.js
+$MP cp static/switches.js :static/switches.js
+$MP cp static/system.js :static/system.js
+$MP cp static/csrf.js :static/csrf.js
+$MP cp static/notes.js :static/notes.js
 
 echo ">>> sensors/ kopieren"
 $MP cp sensors/accelerometer.py :sensors/
@@ -60,12 +66,6 @@ echo ">>> screens/ kopieren"
 $MP cp screens/dashboard.py :screens/
 $MP cp screens/sensor_history_screen.py :screens/
 $MP cp screens/widget_catalog.py :screens/
-
-echo ">>> Nicht mehr benötigte alte Screens vom Gerät entfernen (Fehler falls schon weg sind ok)"
-$MP rm :screens/environment.py || true
-$MP rm :screens/room_dashboard.py || true
-$MP rm :screens/settings.py || true
-$MP rm :screens/magic_mirror.py || true  # umbenannt in widget_catalog.py
 
 echo ">>> widgets/ kopieren"
 $MP cp widgets/lv_const.py :widgets/

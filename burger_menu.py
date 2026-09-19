@@ -36,6 +36,7 @@ except ImportError:
 from theme import COLORS
 from i18n import STRINGS
 from widgets import lv_const
+from lvgl_safety import lvgl_safe_callback
 import wifi_manager
 import sys
 
@@ -68,7 +69,8 @@ class BurgerMenu:
 
     def __init__(self, page, wifi_mgr=None, cfg=None, cfg_save=None,
                  on_brightness_changed=None, switch_to_dashboard=None,
-                 switch_to_sensor_screen=None):
+                 switch_to_sensor_screen=None, switch_dashboard_profile=None,
+                 get_dashboard_profiles=None, get_active_dashboard_id=None):
         if not _HAS_LVGL:
             raise RuntimeError("BurgerMenu benötigt lvgl/m5ui (nur auf der Tab5 verfügbar)")
         self.page = page
@@ -78,6 +80,16 @@ class BurgerMenu:
         self.on_brightness_changed = on_brightness_changed
         self.switch_to_dashboard = switch_to_dashboard
         self.switch_to_sensor_screen = switch_to_sensor_screen
+        # Multi-Dashboard-Feature (siehe HANDOFF.md) - switch_dashboard_
+        # profile: Funktion(profile_id). get_dashboard_profiles: Funktion()
+        # -> Liste von {"id","name"} (genau 2 Einträge erwartet, siehe
+        # config.py "screens.dashboards"). get_active_dashboard_id:
+        # Funktion() -> aktuell aktive profile_id, fürs Hervorheben des
+        # richtigen Buttons beim Öffnen. Alle drei None -> kein Profil-
+        # Umschalter im Menü (z.B. falls main.py sie nicht mitgibt).
+        self.switch_dashboard_profile = switch_dashboard_profile
+        self.get_dashboard_profiles = get_dashboard_profiles
+        self.get_active_dashboard_id = get_active_dashboard_id
         self._overlay = None
         self._status_timer = None
 
@@ -88,14 +100,26 @@ class BurgerMenu:
         self._overlay = lv.obj(self.page)
         self._overlay.set_size(1280, 720)
         self._overlay.set_pos(0, 0)
-        self._overlay.set_style_bg_color(lv.color_hex(0x000000), 0)
-        self._overlay.set_style_bg_opa(180, 0)  # halbtransparent abdunkeln
+        # Blickdicht statt halbtransparent (Nutzerwunsch: Geschwindigkeit
+        # vor "Dashboard schimmert schwach durch") - eine halbtransparente
+        # Fläche über den KOMPLETTEN 1280x720-Bildschirm hat LVGL zu einem
+        # spürbaren (~2s) Alpha-Blending-Vorgang beim Öffnen gezwungen;
+        # bg_opa=255 (voll deckend) braucht kein Blending mehr, sollte
+        # praktisch sofort erscheinen. COLORS["bg"] statt reinem Schwarz,
+        # damit es zum übrigen dunklen Theme passt statt wie ein hartes
+        # schwarzes Loch zu wirken.
+        self._overlay.set_style_bg_color(_hex(COLORS["bg"]), 0)
+        self._overlay.set_style_bg_opa(255, 0)
         self._overlay.set_style_border_width(0, 0)
         self._overlay.set_style_pad_all(0, 0)
         self._overlay.add_flag(lv.obj.FLAG.CLICKABLE)  # Klicks aufs Overlay selbst schlucken
 
         panel = lv.obj(self._overlay)
-        panel.set_size(460, 560)
+        # Höhe 650 (Nutzerwunsch: zurück zu gestapelten Vollbreite-Buttons
+        # statt der kompakten Nebeneinander-Reihen, dafür jetzt 3 Buttons
+        # statt 2 - siehe _build_screen_switch_section() unten für die
+        # genaue Höhen-Kontrollrechnung, die zu diesem Wert geführt hat).
+        panel.set_size(460, 650)
         panel.set_pos(20, 60)
         panel.set_style_bg_color(_hex(COLORS["bg"]), 0)
         panel.set_style_border_width(1, 0)
@@ -103,14 +127,20 @@ class BurgerMenu:
         panel.set_style_pad_all(24, 0)
         panel.remove_flag(lv.obj.FLAG.SCROLLABLE)
         panel.set_flex_flow(lv.FLEX_FLOW.COLUMN)
-        panel.set_style_pad_row(14, 0)
+        # CENTER auf der Querachse (zweiter Parameter) - vorher fehlte das
+        # komplett, wodurch LVGL alle Kinder standardmäßig LINKSBÜNDIG
+        # ausgerichtet hat: schmalere Elemente (z.B. die 360px-Buttons bei
+        # ~412px verfügbarer Breite) ließen dadurch rechts sichtbar mehr
+        # Leerraum als links (Asymmetrie-Meldung).
+        panel.set_flex_align(lv.FLEX_ALIGN.START, lv.FLEX_ALIGN.CENTER, lv.FLEX_ALIGN.CENTER)
+        panel.set_style_pad_row(8, 0)
 
         self._build_wifi_section(panel)
         self._build_brightness_section(panel)
         self._build_screen_switch_section(panel)
 
         close_btn = lv.button(panel)
-        close_btn.set_size(360, 56)
+        close_btn.set_size(360, 50)
         close_btn.set_style_bg_color(_hex(COLORS["fg_faint"]), 0)
         close_label = lv.label(close_btn)
         close_label.set_text(STRINGS.get("menu.close", "Schließen"))
@@ -165,14 +195,22 @@ class BurgerMenu:
         self._wifi_ssid_label.set_text("%s: %s" % (STRINGS["wifi.ssid"], status.get("ssid") or "--"))
         self._wifi_ip_label.set_text("%s: %s" % (STRINGS["wifi.ip"], status.get("ip") or "--"))
         rssi = status.get("rssi")
-        self._wifi_signal_label.set_text(
-            "%s: %d dBm" % (STRINGS["wifi.signal"], rssi) if rssi is not None else "")
+        # Ein leeres Label nimmt im Flex-Layout trotzdem eine eigene Zeile
+        # PLUS einen vollen pad_row-Abstand ein - bei ohnehin schon knapper
+        # Höhe (siehe open()-Kommentar zu PANEL-Höhe) lieber ganz
+        # ausblenden, statt nur den Text zu leeren.
+        if rssi is not None:
+            self._wifi_signal_label.set_text("%s: %d dBm" % (STRINGS["wifi.signal"], rssi))
+            self._wifi_signal_label.remove_flag(lv.obj.FLAG.HIDDEN)
+        else:
+            self._wifi_signal_label.add_flag(lv.obj.FLAG.HIDDEN)
 
         if mode == "ap":
             self._wifi_password_label.set_text(
-                "%s: %s" % (STRINGS["wifi.ap_password"], wifi_manager.AP_PASSWORD))
+                "%s: %s" % (STRINGS["wifi.ap_password"], wifi_manager.ap_password()))
+            self._wifi_password_label.remove_flag(lv.obj.FLAG.HIDDEN)
         else:
-            self._wifi_password_label.set_text("")
+            self._wifi_password_label.add_flag(lv.obj.FLAG.HIDDEN)
 
     # ------------------------------------------------------------------
     # Helligkeit
@@ -185,7 +223,7 @@ class BurgerMenu:
         title.set_style_text_letter_space(2, 0)
 
         row = lv.obj(panel)
-        row.set_size(400, 60)
+        row.set_size(400, 54)
         row.set_style_bg_opa(0, 0)
         row.set_style_border_width(0, 0)
         row.set_style_pad_all(0, 0)
@@ -204,51 +242,84 @@ class BurgerMenu:
         self._brightness_value_label.set_text("%d%%" % self.cfg.get("brightness", 80))
 
     def _build_screen_switch_section(self, panel):
+        # Reihenfolge auf Nutzerwunsch: Dashboard 1, Dashboard 2,
+        # Sensor-Dashboard, (Schließen-Button separat unten in open()).
+        # WICHTIG: JEDER Button läuft über self._switch() statt den
+        # jeweiligen Callback direkt aufzurufen - self._switch() schließt
+        # das Menü ZUERST (löscht Overlay/Panel/Timer sauber), BEVOR der
+        # eigentliche Wechsel (der auf main.py-Seite u.a. page.clean()
+        # auslöst) überhaupt läuft. Ein früherer Versuch mit einem
+        # eigenen Umschalt-Button, der NACH dem Wechsel noch sein
+        # eigenes Label aktualisieren wollte, ist genau daran gescheitert
+        # (LvReferenceError: page.clean() hatte das Label da schon
+        # gelöscht) - siehe HANDOFF.md für die vollständige Fehlermeldung.
         title = lv.label(panel)
         title.set_text("BILDSCHIRM")
         title.set_style_text_font(lv.font_montserrat_24, 0)
         title.set_style_text_color(_hex(COLORS["accent"]), 0)
         title.set_style_text_letter_space(2, 0)
 
-        dashboard_btn = lv.button(panel)
-        dashboard_btn.set_size(360, 56)
-        dashboard_btn.set_style_bg_color(_hex(COLORS["accent"]), 0)
-        dashboard_label = lv.label(dashboard_btn)
-        dashboard_label.set_text("DASHBOARD")
-        dashboard_label.set_style_text_font(lv.font_montserrat_24, 0)
-        dashboard_label.center()
-        dashboard_btn.add_event_cb(lambda e: self._switch(self.switch_to_dashboard), lv.EVENT.CLICKED, None)
+        def _add_button(text, switch_fn):
+            btn = lv.button(panel)
+            btn.set_size(360, 50)
+            btn.set_style_bg_color(_hex(COLORS["accent"]), 0)
+            label = lv.label(btn)
+            label.set_text(text)
+            label.set_style_text_font(lv.font_montserrat_24, 0)
+            label.center()
+            btn.add_event_cb(lambda e: self._switch(switch_fn), lv.EVENT.CLICKED, None)
+
+        # Dashboard-Profil-Buttons (Multi-Dashboard-Feature, siehe
+        # HANDOFF.md) - je einer pro (genau 2) Profil, ersetzt den
+        # früheren einzelnen generischen "DASHBOARD"-Button. Fällt auf
+        # genau diesen alten generischen Button zurück, falls main.py die
+        # nötigen Callbacks (noch) nicht mitgibt - z.B. während einer
+        # Übergangsphase ohne Multi-Dashboard-Wiring.
+        profiles = []
+        if self.switch_dashboard_profile is not None and self.get_dashboard_profiles is not None:
+            profiles = self.get_dashboard_profiles()[:2]
+
+        if len(profiles) >= 2:
+            for p in profiles:
+                pid = p["id"]
+                _add_button(p.get("name", pid).upper(),
+                            lambda pid=pid: self.switch_dashboard_profile(pid))
+        else:
+            _add_button("DASHBOARD", self.switch_to_dashboard)
 
         if self.switch_to_sensor_screen is not None:
-            sensor_btn = lv.button(panel)
-            sensor_btn.set_size(360, 56)
-            sensor_btn.set_style_bg_color(_hex(COLORS["accent"]), 0)
-            sensor_label = lv.label(sensor_btn)
-            sensor_label.set_text("SENSOR-DASHBOARD")
-            sensor_label.set_style_text_font(lv.font_montserrat_24, 0)
-            sensor_label.center()
-            sensor_btn.add_event_cb(lambda e: self._switch(self.switch_to_sensor_screen), lv.EVENT.CLICKED, None)
+            _add_button("SENSOR-DASHBOARD", self.switch_to_sensor_screen)
 
+    @lvgl_safe_callback(label="Bildschirmwechsel")
     def _switch(self, switch_fn):
-        # KRITISCH: eine Exception in einem LVGL-Touch-Callback reißt den
-        # kompletten m5ui/LVGL-Scheduler mit runter (beobachtet: Gerät
-        # reagiert komplett nicht mehr) - besonders abgesichert, da das
-        # Sensor-Dashboard als erster Screen in diesem Projekt lv.chart
-        # nutzt und noch nicht auf echter Hardware bewährt ist.
+        # Absicherung läuft jetzt über @lvgl_safe_callback (Optimierungs-
+        # Backlog Punkt 2, siehe HANDOFF.md) statt über ein eigenes
+        # try/except - der Decorator übernimmt inzwischen genau das hier
+        # zuerst eingeführte sys.print_exception()-Verhalten (voller
+        # Traceback mit Zeilennummer statt nur der Fehlermeldung, sonst
+        # sieht man im Log oft nur etwas wie "function takes 3 positional
+        # arguments but 2 were given" ohne zu wissen, WELCHER Aufruf das
+        # war) - besonders wichtig hier, da das Sensor-Dashboard als
+        # erster Screen in diesem Projekt lv.chart nutzt und noch nicht
+        # auf echter Hardware bewährt ist.
         if switch_fn is None:
             return
-        try:
-            self.close()
-            switch_fn()
-        except Exception as e:
-            # sys.print_exception() statt nur print(e) - liefert den
-            # vollständigen Traceback mit Zeilennummer, sonst sehen wir
-            # nur "function takes 3 positional arguments but 2 were
-            # given" OHNE zu wissen, WELCHER Aufruf das war.
-            print("Bildschirmwechsel fehlgeschlagen:")
-            sys.print_exception(e)
+        self.close()
+        switch_fn()
 
+    @lvgl_safe_callback(label="Helligkeits-Slider")
     def _on_brightness_changed(self, e):
+        # cfg_save wird von main.py inzwischen als config.request_save
+        # (nicht mehr config.save) hereingereicht - siehe Optimierungs-
+        # Backlog Punkt 3 (Debounced Config-Save, HANDOFF.md): genau
+        # DIESER Slider war der eigentliche Auslöser für diesen Backlog-
+        # Punkt (siehe config.py::save()-Docstring) - ein Sliderzug feuert
+        # potenziell viele VALUE_CHANGED-Events in schneller Folge, und
+        # request_save() bündelt die zu EINEM Schreibvorgang 2s nach dem
+        # Loslassen, statt bei jedem einzelnen Event den Flash zu
+        # beschreiben. Für den Aufrufer hier ändert sich nichts (gleiche
+        # Signatur cfg_save(cfg)) - main.py entscheidet, welche der
+        # beiden Funktionen hereingereicht wird.
         percent = self._brightness_slider.get_value()
         self._brightness_value_label.set_text("%d%%" % percent)
         self.cfg["brightness"] = percent
@@ -258,6 +329,7 @@ class BurgerMenu:
             self.on_brightness_changed(percent)
 
     # ------------------------------------------------------------------
+    @lvgl_safe_callback(label="Burger-Menü schließen")
     def close(self):
         if self._status_timer is not None:
             self._status_timer.delete()

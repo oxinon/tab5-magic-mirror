@@ -15,6 +15,7 @@ aufgebaut zu werden - siehe TODO in README.md.
 """
 
 from theme import COLORS
+from lvgl_safety import lvgl_safe_callback
 
 try:
     import lvgl as lv
@@ -61,7 +62,7 @@ class StatusBar:
         self.bar = lv.obj(parent)
         self.bar.set_size(1280, BAR_HEIGHT)
         self.bar.set_pos(0, 0)
-        self.bar.set_style_bg_color(lv.color_hex(0x000000), 0)
+        self.bar.set_style_bg_color(_hex(COLORS["bg"]), 0)
         self.bar.set_style_border_width(0, 0)
         self.bar.set_style_pad_all(0, 0)
         self.bar.remove_flag(lv.obj.FLAG.SCROLLABLE)
@@ -83,7 +84,25 @@ class StatusBar:
         self.menu_icon.center()
         if on_menu_pressed:
             self.menu_btn.add_flag(lv.obj.FLAG.CLICKABLE)
-            self.menu_btn.add_event_cb(lambda e: on_menu_pressed(), lv.EVENT.CLICKED, None)
+            # Trefferzone zusätzlich über die sichtbaren 64x44px hinaus
+            # vergrößern (Nutzerwunsch: "schwer zu treffen") - set_ext_
+            # click_area() erweitert NUR den Touch-Bereich, nicht die
+            # Optik/das Layout (Standard-LVGL-API genau für diesen Fall:
+            # kleines Symbol, aber großzügigerer Antipp-Bereich). 24px
+            # auf allen Seiten macht aus 64x44 effektiv ~112x92 -
+            # praktisch verdoppelt, ohne dass der Button optisch größer
+            # wirkt oder benachbarte StatusBar-Icons überlappt (WLAN/Akku-
+            # Symbole sitzen alle rechts, mit deutlichem Abstand).
+            self.menu_btn.set_ext_click_area(24)
+
+            # Bisher OHNE jede Absicherung - eine Exception in
+            # on_menu_pressed() (z.B. burger_menu.py) hätte den kompletten
+            # m5ui/LVGL-Scheduler mitgerissen (siehe lvgl_safety.py-
+            # Docstring). Optimierungs-Backlog Punkt 2, siehe HANDOFF.md.
+            @lvgl_safe_callback(label="Burger-Menü-Button")
+            def _on_menu_click(e):
+                on_menu_pressed()
+            self.menu_btn.add_event_cb(_on_menu_click, lv.EVENT.CLICKED, None)
 
         # WLAN-Icon (oben rechts, links vom Akku)
         self.wifi_icon = lv.label(self.bar)
@@ -105,7 +124,10 @@ class StatusBar:
 
         self.battery_label = lv.label(self.bar)
         self.battery_label.set_style_text_font(lv.font_montserrat_16, 0)
-        self.battery_label.set_pos(1200, 40)
+        # x etwas weiter links als der Akku-Icon selbst (1200) - "100%"
+        # allein passte bei x=1200 bequem, "100% · 8.4V" ist deutlich
+        # breiter und würde sonst am rechten Bildschirmrand (1280) anstoßen.
+        self.battery_label.set_pos(1150, 40)
 
         self.set_wifi_connected(False)
         self.set_battery(100)
@@ -114,12 +136,19 @@ class StatusBar:
         color = COLORS["fg"] if connected else COLORS["fg_faint"]
         self.wifi_icon.set_style_text_color(_hex(color), 0)
 
-    def set_battery(self, percent, charging=False):
+    def set_battery(self, percent, charging=False, voltage_mv=None):
         percent = max(0, min(100, percent))
         self.battery_icon.set_text(_battery_symbol(percent))
         color = COLORS["red"] if percent <= 15 and not charging else COLORS["fg"]
         self.battery_icon.set_style_text_color(_hex(color), 0)
-        self.battery_label.set_text("%d%%" % percent)
+        # Spannung direkt neben der Prozentangabe (Nutzerwunsch), nicht
+        # als separates Element - voltage_mv ist optional/None, solange
+        # main.py sie (noch) nicht mitgibt, dann bleibt es bei "100%"
+        # wie bisher.
+        if voltage_mv is not None:
+            self.battery_label.set_text("%d%% \u00b7 %.1fV" % (percent, voltage_mv / 1000))
+        else:
+            self.battery_label.set_text("%d%%" % percent)
 
         if charging:
             self.charge_icon.remove_flag(lv.obj.FLAG.HIDDEN)

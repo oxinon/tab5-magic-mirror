@@ -36,6 +36,28 @@ except ImportError:
     time = None
 
 
+_ID_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789_"
+
+
+def _valid_ident(text):
+    if not text:
+        return False
+    for ch in text:
+        if ch not in _ID_CHARS:
+            return False
+    return True
+
+
+def _valid_entity_id(entity_id):
+    """"domain.objekt_id" mit nur [a-z0-9_] - verhindert, dass ein Wert aus
+    der Config (im Web-UI frei eingebbar) beliebige Pfade an die HA-URL
+    anhaengt ("../", "?" usw.)."""
+    if not isinstance(entity_id, str) or entity_id.count(".") != 1:
+        return False
+    domain, obj = entity_id.split(".")
+    return _valid_ident(domain) and _valid_ident(obj)
+
+
 class HomeAssistantClient:
     # Siehe api_client.py::ApiClient.FAIL_BACKOFF_S für die ausführliche
     # Begründung - hier besonders wichtig, weil get_states() pro Entität
@@ -89,6 +111,8 @@ class HomeAssistantClient:
         {"entity_id": "sensor.wohnzimmer_temp", "state": "21.4",
          "attributes": {"unit_of_measurement": "°C", ...}, "ok": True}
         """
+        if not _valid_entity_id(entity_id):
+            return {"ok": False, "msg": "Ungültige entity_id: %r" % (entity_id,)}
         skip_reason = self._check_backoff()
         if skip_reason:
             return {"ok": False, "msg": skip_reason}
@@ -97,7 +121,12 @@ class HomeAssistantClient:
         try:
             r = requests.get(url, headers=self.headers)
             if r.status_code != 200:
-                self._mark_result(False)
+                # NUR Serverfehler (5xx) zaehlen als "HA nicht erreichbar" und
+                # loesen das 60s-Backoff fuer ALLE Entitaeten aus. Ein 404
+                # (falsch geschriebene/geloeschte Entity) oder 401 heisst: HA
+                # antwortet ja - frueher blockierte so EINE falsche Entity
+                # alle anderen dauerhaft ("Backoff aktiv").
+                self._mark_result(r.status_code < 500)
                 return {"ok": False, "msg": "HTTP %d" % r.status_code}
             data = r.json()
             data["ok"] = True
@@ -123,6 +152,8 @@ class HomeAssistantClient:
     def call_service(self, domain, service, entity_id, service_data=None):
         """Für spätere Interaktion (z.B. Licht schalten) - vorbereitet,
         aktuell aber in keinem Screen verdrahtet."""
+        if not (_valid_ident(domain) and _valid_ident(service) and _valid_entity_id(entity_id)):
+            return {"ok": False, "msg": "Ungültige Angaben (domain/service/entity_id)"}
         skip_reason = self._check_backoff()
         if skip_reason:
             return {"ok": False, "msg": skip_reason}
@@ -134,7 +165,7 @@ class HomeAssistantClient:
         try:
             r = requests.post(url, headers=self.headers, json=payload)
             ok = r.status_code == 200
-            self._mark_result(ok)
+            self._mark_result(r.status_code < 500)  # siehe get_state(): nur 5xx = nicht erreichbar
             return {"ok": ok}
         except Exception as e:
             self._mark_result(False)

@@ -17,11 +17,16 @@ import time
 
 class StaLtaTrigger:
     def __init__(self, sta_tau_s=0.5, lta_tau_s=30.0, trigger_ratio=3.0,
-                 release_delay_s=5.0):
+                 release_delay_s=5.0, min_sta=0.02):
         self.sta_tau_s = sta_tau_s
         self.lta_tau_s = lta_tau_s
         self.trigger_ratio = trigger_ratio
         self.release_delay_s = release_delay_s
+        # Mindest-Amplitude (in g, Kurzzeit-Mittel): ohne sie loest in sehr ruhiger
+        # Umgebung schon eine winzige Schwankung ein Verhaeltnis >= trigger_ratio aus
+        # (lta ist dann fast 0) - und damit den Alarmton. 0 = wie frueher.
+        self.min_sta = min_sta
+        self._last_ticks = None
 
         self.sta = 0.0
         self.lta = 1e-6  # kleiner Startwert statt 0, um Division durch 0 zu vermeiden
@@ -36,6 +41,14 @@ class StaLtaTrigger:
 
     def update(self, magnitude, ts=None):
         ts = ts if ts is not None else time.time()
+        # Zeitschritt aus einem MONOTONEN Zaehler (time.time() springt bei einer
+        # NTP-Synchronisierung); ts bleibt Wanduhrzeit fuer "letztes Ereignis".
+        dt_mono = None
+        if hasattr(time, "ticks_ms"):
+            now_ticks = time.ticks_ms()
+            if self._last_ticks is not None:
+                dt_mono = time.ticks_diff(now_ticks, self._last_ticks) / 1000.0
+            self._last_ticks = now_ticks
 
         if self._last_ts is None:
             self._last_ts = ts
@@ -43,7 +56,7 @@ class StaLtaTrigger:
             self.lta = magnitude
             return self._state(1.0)
 
-        dt = max(ts - self._last_ts, 1e-3)
+        dt = max(dt_mono if dt_mono is not None else (ts - self._last_ts), 1e-3)
         self._last_ts = ts
 
         alpha_sta = 1 - math.exp(-dt / self.sta_tau_s)
@@ -54,7 +67,7 @@ class StaLtaTrigger:
 
         ratio = self.sta / self.lta if self.lta else 0
         was_triggered = self._triggered_since is not None
-        is_active = ratio >= self.trigger_ratio
+        is_active = ratio >= self.trigger_ratio and self.sta >= self.min_sta
 
         if is_active:
             if not was_triggered:

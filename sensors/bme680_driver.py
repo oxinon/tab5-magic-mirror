@@ -109,6 +109,9 @@ class Adafruit_BME680:
     def __init__(self, *, refresh_rate=10):
         """Check the BME680 was found, read the coefficients and enable the sensor for continuous
            reads."""
+        # Siehe read_all(): solange True, loest kein Property-Zugriff eine
+        # neue Messung aus (sonst 4 Messzyklen inkl. Gas-Heizung pro Lesen).
+        self._hold = False
         self._write(_BME680_REG_SOFTRESET, [0xB6])
         time.sleep(0.005)
 
@@ -262,9 +265,27 @@ class Adafruit_BME680:
         calc_gas_res = (var3 + (var2 / 2)) / var2
         return int(calc_gas_res)
 
+    MEASUREMENT_TIMEOUT_MS = 1000
+
+    def read_all(self):
+        """Eine EINZIGE Messung, daraus (temperatur, druck, feuchte, gas).
+        Die einzelnen Properties loesen sonst jeweils eine eigene Messung
+        (mit Gas-Heizung) aus - 4x pro Lesevorgang: blockiert die Event-Loop
+        deutlich laenger, heizt den Sensor unnoetig auf (verfaelscht die
+        Temperatur) und mischt Werte aus vier verschiedenen Messungen."""
+        self._hold = False
+        self._perform_reading()
+        self._hold = True
+        try:
+            return self.temperature, self.pressure, self.humidity, self.gas
+        finally:
+            self._hold = False
+
     def _perform_reading(self):
         """Perform a single-shot reading from the sensor and fill internal data structure for
            calculations"""
+        if self._hold:
+            return  # Werte stammen aus der Messung, die read_all() gerade gemacht hat
         expired = time.ticks_diff(self._last_reading, time.ticks_ms()) * time.ticks_diff(0, 1)
         if 0 <= expired < self._min_refresh_time:
             time.sleep_ms(self._min_refresh_time - expired)
@@ -283,9 +304,18 @@ class Adafruit_BME680:
         ctrl = (ctrl & 0xFC) | 0x01  # enable single shot!
         self._write(_BME680_REG_CTRL_MEAS, [ctrl])
         new_data = False
+        # WICHTIG: frueher ohne Timeout - antwortet der Sensor nicht mehr
+        # (I2C-Aussetzer), lief diese Schleife endlos und fror das ganze
+        # Geraet ein. Jetzt nach MEASUREMENT_TIMEOUT_MS mit Fehler abbrechen
+        # (wird vom Aufrufer als "Sensor nicht verfuegbar" behandelt).
+        t_start = time.ticks_ms()
         while not new_data:
             data = self._read(_BME680_REG_MEAS_STATUS, 15)
             new_data = data[0] & 0x80 != 0
+            if new_data:
+                break
+            if time.ticks_diff(time.ticks_ms(), t_start) > self.MEASUREMENT_TIMEOUT_MS:
+                raise OSError("BME680: Messung nach %d ms nicht fertig" % self.MEASUREMENT_TIMEOUT_MS)
             time.sleep(0.005)
         self._last_reading = time.ticks_ms()
 

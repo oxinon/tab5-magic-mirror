@@ -52,6 +52,11 @@ def to_ascii(s):
     wenigstens sichtbar, dass dort ein Zeichen fehlt)."""
     if not s:
         return s
+    # Schneller Pfad: reiner ASCII-Text (der Normalfall) braucht keine der ~50
+    # Ersetzungen - to_ascii() laeuft bei jedem Label-Update. (Ein reiner
+    # ASCII-String ist UTF-8-kodiert genauso lang wie er Zeichen hat.)
+    if len(s.encode()) == len(s):
+        return s
     for k, v in _TRANSLITERATE.items():
         if k in s:
             s = s.replace(k, v)

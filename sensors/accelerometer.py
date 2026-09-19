@@ -89,12 +89,19 @@ class LocalAccelSource:
     denselben (dann extern übergebenen) Bus zurück, ohne die Aufrufstelle
     in main.py nochmal ändern zu müssen."""
 
-    def __init__(self, i2c=None, addr=0x68, sta_tau_s=0.5, lta_tau_s=30.0, trigger_ratio=3.0):
+    def __init__(self, i2c=None, addr=0x68, sta_tau_s=0.5, lta_tau_s=30.0, trigger_ratio=3.0,
+                 min_amplitude_g=0.02):
         self.i2c = i2c
         self.addr = addr
         self.trigger = StaLtaTrigger(sta_tau_s=sta_tau_s, lta_tau_s=lta_tau_s,
-                                      trigger_ratio=trigger_ratio)
+                                      trigger_ratio=trigger_ratio, min_sta=min_amplitude_g)
         self._warned_zero = False
+        self._zero_streak = 0
+
+    # So viele aufeinanderfolgende (0,0,0)-Reads (bei ~20Hz = 2s), bis der
+    # Sensor als "liefert keine Daten" gilt. Ein echter Sensor misst immer
+    # mindestens die Erdanziehung (~1g) - exakt (0,0,0) ist nie plausibel.
+    ZERO_STREAK_LIMIT = 40
 
     def is_available(self):
         if M5 is None:
@@ -126,6 +133,18 @@ class LocalAccelSource:
             x, y, z = self._read_raw()
         except Exception as e:
             return AccelReading(ok=False, msg=str(e))
+
+        # Bekannter Firmware-Bug (siehe Modul-Docstring): dauerhaft (0,0,0).
+        # Frueher wurde daraus magnitude = -1.0 mit ok=True - "ruhig", aber
+        # erfundene Werte in Widget, Web-Grafik und SD-Log. Jetzt ehrlich
+        # "nicht verfuegbar", und der STA/LTA-Trigger bekommt keine Fake-Daten.
+        if x == 0.0 and y == 0.0 and z == 0.0:
+            self._zero_streak += 1
+            if self._zero_streak >= self.ZERO_STREAK_LIMIT:
+                return AccelReading(ok=False,
+                                     msg="IMU liefert nur Nullwerte (bekannter Firmware-Bug)")
+        else:
+            self._zero_streak = 0
 
         # 1g (Erdanziehung) abziehen, damit im Ruhezustand ~0 herauskommt
         magnitude = math.sqrt(x * x + y * y + z * z) - 1.0

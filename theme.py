@@ -24,7 +24,6 @@ DARK = {
     "down": "#b96a5a",
     "amber": "#f5b942",
     "red": "#ff5555",
-    "hairline": "rgba(255,255,255,0.08)",
 }
 
 LIGHT = {
@@ -38,7 +37,6 @@ LIGHT = {
     "down": "#a14a3a",
     "amber": "#c98f1d",
     "red": "#d13f3f",
-    "hairline": "rgba(0,0,0,0.08)",
 }
 
 # Startet dunkel (Original-Magic-Mirror-Optik); set_mode() wechselt live
